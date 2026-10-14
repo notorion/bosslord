@@ -1,0 +1,597 @@
+### Eclipse Workspace Patch 1.0
+diff --git dist/game/data/scripts/ai/bosses/LordIshka/LordIshka.java dist/game/data/scripts/ai/bosses/LordIshka/LordIshka.java
+new file mode 100644
+index 0000000..ffbe7c6
+--- /dev/null
++++ dist/game/data/scripts/ai/bosses/LordIshka/LordIshka.java
+@@ -0,0 +1,590 @@
++/*
++ * Copyright (c) 2013 L2jMobius
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ * 
++ * The above copyright notice and this permission notice shall be
++ * included in all copies or substantial portions of the Software.
++ * 
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
++ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
++ * IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++package ai.bosses.LordIshka;
++
++import java.util.ArrayList;
++import java.util.Calendar;
++import java.util.List;
++import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
++
++import org.l2jmobius.commons.threads.ThreadPool;
++import org.l2jmobius.commons.util.Rnd;
++import org.l2jmobius.gameserver.ai.Intention;
++import org.l2jmobius.gameserver.data.SpawnTable;
++import org.l2jmobius.gameserver.data.xml.NpcData;
++import org.l2jmobius.gameserver.entity.Location;
++import org.l2jmobius.gameserver.entity.World;
++import org.l2jmobius.gameserver.entity.actor.Attackable;
++import org.l2jmobius.gameserver.entity.actor.Creature;
++import org.l2jmobius.gameserver.entity.actor.Npc;
++import org.l2jmobius.gameserver.entity.actor.Player;
++import org.l2jmobius.gameserver.entity.actor.templates.NpcTemplate;
++import org.l2jmobius.gameserver.entity.groups.CommandChannel;
++import org.l2jmobius.gameserver.entity.groups.Party;
++import org.l2jmobius.gameserver.entity.spawns.Spawn;
++import org.l2jmobius.gameserver.entity.zone.type.ArenaZone;
++import org.l2jmobius.gameserver.managers.DatabaseSpawnManager;
++import org.l2jmobius.gameserver.managers.GlobalVariablesManager;
++import org.l2jmobius.gameserver.managers.ZoneManager;
++import org.l2jmobius.gameserver.mechanics.script.Script;
++import org.l2jmobius.gameserver.mechanics.skill.Skill;
++import org.l2jmobius.gameserver.mechanics.skill.SkillCaster;
++import org.l2jmobius.gameserver.mechanics.skill.holders.SkillHolder;
++
++/**
++ * Lord Ishka AI - Prelude of War Part 2
++ * @author Notorion
++ */
++public class LordIshka extends Script
++{
++	// Boss Info
++	private static final int LORD_ISHKA = 29379;
++	private static final int REQUIRED_CC_MEMBERS = 14;
++	private static final int MIN_PLAYER_LEVEL = 110;
++	
++	// Skills
++	private static final SkillHolder ISHKA_WHIRLWIND = new SkillHolder(32924, 1); // Ishka's Whirlwind (Melee + Knockback)
++	private static final SkillHolder ISHKA_VICIOUS_STRIKE = new SkillHolder(32925, 1); // Ishka's Vicious Strike (AoE 450)
++	private static final SkillHolder ISHKA_LIGHTNING_BURST = new SkillHolder(32926, 1); // Ishka's Lightning Burst (AoE 300 Paralyze)
++	
++	// Skills - Limit Barrier
++	private static final SkillHolder LIMIT_BARRIER = new SkillHolder(29515, 1);
++	
++	// Barrier Mechanics
++	private static final int BARRIER_DURATION_MILLIS = 600000; // 10 minutes barrier duration.
++	private static final int HIT_COUNT = 2000; // 2000 attacks needed to break the barrier.
++	private static final int HIT_COUNT_RENEW = 500; // 500 hits needed to continue without barrier.
++	private static final int RENEW_DURATION_MILLIS = 600000; // Vulnerability duration window.
++	
++	// Locations
++	private static final Location SPAWN_LOCATION = new Location(127926, 114721, -3608, 31812); // In front of Antharas' Lair
++	private static final Location TELEPORT_OUT_LOCATION = new Location(72370, 116479, -3270); // Near the Town Giran
++	
++	// Zone
++	private static final ArenaZone ARENA_ZONE = ZoneManager.getInstance().getZoneByName("ishka_pvp", ArenaZone.class);
++	
++	// Runtime Variables
++	private static Npc _spawnedMainBoss;
++	private boolean _barrierActivated = false;
++	private boolean _vulnerablePhase = false;
++	private boolean _bossInCombat = false;
++	private long _lastAttackTime = 0;
++	private long _castIntentionStartTime = 0;
++	private int _comboStep = 0;
++	private final Map<Npc, Integer> _ishkaHits = new ConcurrentHashMap<>();
++	
++	private LordIshka()
++	{
++		addAttackId(LORD_ISHKA);
++		addSpawnId(LORD_ISHKA);
++		addKillId(LORD_ISHKA);
++		addAggroRangeEnterId(LORD_ISHKA);
++		
++		final long currentTime = System.currentTimeMillis();
++		final Calendar calendar = Calendar.getInstance();
++		
++		// Spawn time to 22:00 Wednesday (Coatl RaidBoss model).
++		calendar.set(Calendar.DAY_OF_WEEK, Calendar.WEDNESDAY);
++		calendar.set(Calendar.HOUR_OF_DAY, 22);
++		calendar.set(Calendar.MINUTE, 0);
++		calendar.set(Calendar.SECOND, 0);
++		calendar.set(Calendar.MILLISECOND, 0);
++		
++		if (GlobalVariablesManager.getInstance().getBoolean("LORD_ISHKA_ALIVE", true))
++		{
++			spawnLordIshka();
++		}
++		
++		if (calendar.getTimeInMillis() < currentTime)
++		{
++			calendar.add(Calendar.WEEK_OF_YEAR, 1);
++		}
++		
++		ThreadPool.scheduleAtFixedRate(this::spawnLordIshka, calendar.getTimeInMillis() - currentTime, 604800000);
++		startQuestTimer("check_arena", 5000, null, null, true);
++	}
++	
++	private void spawnLordIshka()
++	{
++		final Spawn oldSpawn = SpawnTable.getInstance().getAnySpawn(LORD_ISHKA);
++		if (oldSpawn != null)
++		{
++			if (oldSpawn.getLastSpawn() != null)
++			{
++				oldSpawn.getLastSpawn().deleteMe();
++			}
++			SpawnTable.getInstance().removeSpawn(oldSpawn);
++		}
++		
++		try
++		{
++			// Anti-duplication safety: do not spawn if already alive in memory
++			if ((_spawnedMainBoss != null) && !_spawnedMainBoss.isDead() && _spawnedMainBoss.isSpawned())
++			{
++				LOGGER.warning("Lord Ishka: Boss is already alive and spawned. Skipping duplicate spawn.");
++				return;
++			}
++			
++			// Anti-duplication safety: check if an active instance already exists in World
++			final Npc existing = World.getNpc(LORD_ISHKA);
++			if ((existing != null) && !existing.isDead() && existing.isSpawned())
++			{
++				LOGGER.warning("Lord Ishka: Existing active NPC found in world. Reusing instance.");
++				_spawnedMainBoss = existing;
++				return;
++			}
++			
++			final NpcTemplate template = NpcData.getInstance().getTemplate(LORD_ISHKA);
++			final Spawn spawn = new Spawn(template);
++			spawn.setXYZ(SPAWN_LOCATION);
++			spawn.setHeading(SPAWN_LOCATION.getHeading());
++			spawn.setRespawnDelay(0);
++			
++			final Npc boss = DatabaseSpawnManager.getInstance().addNewSpawn(spawn, false);
++			_spawnedMainBoss = boss;
++			GlobalVariablesManager.getInstance().set("LORD_ISHKA_ALIVE", true);
++			LOGGER.info("Lord Ishka: Boss spawned successfully at " + SPAWN_LOCATION);
++			
++			boss.setRandomWalking(false);
++			boss.setRandomAnimation(false);
++		}
++		catch (Exception e)
++		{
++			LOGGER.severe("Lord Ishka: Error spawning boss: " + e.getMessage());
++		}
++	}
++	
++	@Override
++	public void onSpawn(Npc npc)
++	{
++		startQuestTimer("checkCombatStatus", 1000, npc, null, true);
++	}
++	
++	@Override
++	public void onAggroRangeEnter(Npc npc, Player player, boolean isSummon)
++	{
++		if ((npc == null) || (npc.getId() != LORD_ISHKA))
++		{
++			return;
++		}
++		
++		if (!_bossInCombat)
++		{
++			_bossInCombat = true;
++			startQuestTimer("AUTO_SKILL_LOOP", 100, npc, null);
++		}
++		
++		_lastAttackTime = System.currentTimeMillis();
++		checkCombatStatus(npc);
++	}
++	
++	@Override
++	public void onAttack(Npc npc, Player attacker, int damage, boolean isSummon, Skill skill)
++	{
++		if ((npc == null) || (npc.getId() != LORD_ISHKA))
++		{
++			return;
++		}
++		
++		// 1. Barrier Logic
++		if (!_barrierActivated)
++		{
++			_barrierActivated = true;
++			LIMIT_BARRIER.getSkill().applyEffects(npc, npc);
++			npc.setInvul(true);
++			startQuestTimer("remove_barrier", BARRIER_DURATION_MILLIS, npc, null);
++			_ishkaHits.put(npc, 0);
++		}
++		
++		if (_vulnerablePhase)
++		{
++			final int hits = _ishkaHits.getOrDefault(npc, 0) + 1;
++			_ishkaHits.put(npc, hits);
++			
++			if (hits >= HIT_COUNT_RENEW)
++			{
++				cancelQuestTimer("activate_barrier", npc, null);
++				startQuestTimer("activate_barrier", RENEW_DURATION_MILLIS, npc, null);
++				_ishkaHits.put(npc, 0);
++			}
++		}
++		else
++		{
++			final int hits = _ishkaHits.getOrDefault(npc, 0) + 1;
++			_ishkaHits.put(npc, hits);
++			
++			if (hits >= HIT_COUNT)
++			{
++				npc.stopSkillEffects(LIMIT_BARRIER.getSkill());
++				npc.setInvul(false);
++				cancelQuestTimer("remove_barrier", npc, null);
++				_vulnerablePhase = true;
++				startQuestTimer("activate_barrier", RENEW_DURATION_MILLIS, npc, null);
++				_ishkaHits.put(npc, 0);
++			}
++		}
++		
++		// 2. Arena Zone Security check
++		if ((ARENA_ZONE != null) && !ARENA_ZONE.isInsideZone(attacker))
++		{
++			attacker.teleToLocation(TELEPORT_OUT_LOCATION, false);
++			return;
++		}
++		
++		_lastAttackTime = System.currentTimeMillis();
++		if (!_bossInCombat)
++		{
++			_bossInCombat = true;
++			startQuestTimer("AUTO_SKILL_LOOP", 100, npc, null);
++		}
++		
++		// 3. Level and Party / Command Channel Validation
++		if (isPlayerInValidCommandChannel(attacker))
++		{
++			final CommandChannel cc = attacker.getParty().getCommandChannel();
++			for (Player member : cc.getMembers())
++			{
++				if (member.getLevel() < MIN_PLAYER_LEVEL)
++				{
++					attacker.teleToLocation(TELEPORT_OUT_LOCATION, false);
++					return;
++				}
++			}
++		}
++		else if (attacker.getLevel() < MIN_PLAYER_LEVEL)
++		{
++			attacker.teleToLocation(TELEPORT_OUT_LOCATION, false);
++			return;
++		}
++		
++		if (!isPlayerInValidCommandChannel(attacker))
++		{
++			attacker.teleToLocation(TELEPORT_OUT_LOCATION, false);
++			return;
++		}
++	}
++	
++	private boolean isPlayerInValidCommandChannel(Player player)
++	{
++		final Party party = player.getParty();
++		if (party == null)
++		{
++			return false;
++		}
++		
++		final CommandChannel cc = party.getCommandChannel();
++		if ((cc == null) || (cc.getMemberCount() < REQUIRED_CC_MEMBERS))
++		{
++			return false;
++		}
++		
++		return true;
++	}
++	
++	// Combat Skill Management - Skills (32924, 32925, 32926)
++	
++	private void manageSkills(Npc npc)
++	{
++		if ((npc == null) || npc.isDead())
++		{
++			return;
++		}
++		
++		if (npc.isCastingNow())
++		{
++			return;
++		}
++		
++		final Attackable monster = npc.asAttackable();
++		if (monster == null)
++		{
++			return;
++		}
++		
++		final Creature target = getValidTarget(monster);
++		if (target == null)
++		{
++			npc.getAI().setIntentionActive();
++			return;
++		}
++		
++		npc.setTarget(target);
++		final double distance = npc.calculateDistance2D(target);
++		
++		SkillHolder skillToCast = null;
++		switch (_comboStep)
++		{
++			case 0:
++			{
++				skillToCast = ISHKA_WHIRLWIND;
++				break;
++			}
++			case 1:
++			{
++				skillToCast = ISHKA_VICIOUS_STRIKE;
++				break;
++			}
++			case 2:
++			{
++				skillToCast = ISHKA_LIGHTNING_BURST;
++				break;
++			}
++			case 3:
++			{
++				skillToCast = ISHKA_WHIRLWIND;
++				break;
++			}
++			default:
++			{
++				skillToCast = ISHKA_WHIRLWIND;
++				_comboStep = 0;
++				break;
++			}
++		}
++		
++		// If chosen AoE skill cannot hit target because target is too far (> radius) or is on cooldown, fallback to Whirlwind to approach
++		if ((skillToCast == ISHKA_VICIOUS_STRIKE) && ((distance > 450) || !SkillCaster.checkUseConditions(npc, ISHKA_VICIOUS_STRIKE.getSkill())))
++		{
++			skillToCast = ISHKA_WHIRLWIND;
++		}
++		else if ((skillToCast == ISHKA_LIGHTNING_BURST) && ((distance > 300) || !SkillCaster.checkUseConditions(npc, ISHKA_LIGHTNING_BURST.getSkill())))
++		{
++			skillToCast = ISHKA_WHIRLWIND;
++		}
++		
++		if (skillToCast == ISHKA_WHIRLWIND)
++		{
++			if (SkillCaster.checkUseConditions(npc, ISHKA_WHIRLWIND.getSkill()))
++			{
++				if (distance <= 60)
++				{
++					npc.doCast(ISHKA_WHIRLWIND.getSkill());
++				}
++				else
++				{
++					_castIntentionStartTime = System.currentTimeMillis();
++					npc.getAI().setIntentionCast(ISHKA_WHIRLWIND.getSkill(), target);
++				}
++				_comboStep = (_comboStep + 1) % 4;
++			}
++		}
++		else if (skillToCast != null)
++		{
++			if (SkillCaster.checkUseConditions(npc, skillToCast.getSkill()))
++			{
++				npc.doCast(skillToCast.getSkill());
++				_comboStep = (_comboStep + 1) % 4;
++			}
++			else
++			{
++				_comboStep = (_comboStep + 1) % 4;
++			}
++		}
++	}
++	
++	// 30% chance to select a random active player inside arena, otherwise most hated.
++	
++	private Creature getValidTarget(Attackable monster)
++	{
++		Creature target = null;
++		
++		if (Rnd.get(100) < 30)
++		{
++			final List<Player> validPlayers = new ArrayList<>();
++			if (ARENA_ZONE != null)
++			{
++				for (Player p : ARENA_ZONE.getPlayersInside())
++				{
++					if ((p != null) && !p.isDead() && !p.isInvul() && p.isSpawned())
++					{
++						validPlayers.add(p);
++					}
++				}
++			}
++			if (!validPlayers.isEmpty())
++			{
++				target = validPlayers.get(Rnd.get(validPlayers.size()));
++			}
++		}
++		
++		if (target == null)
++		{
++			target = monster.getMostHated();
++		}
++		
++		if ((target != null) && target.isSummon())
++		{
++			final Player owner = target.asSummon().getOwner();
++			if ((owner != null) && ((ARENA_ZONE == null) || ARENA_ZONE.isInsideZone(owner)))
++			{
++				target = owner;
++			}
++		}
++		
++		if ((target != null) && (target.isDead() || ((ARENA_ZONE != null) && !ARENA_ZONE.isInsideZone(target))))
++		{
++			monster.getAggroList().remove(target);
++			return null;
++		}
++		
++		return target;
++	}
++	
++	@Override
++	public String onEvent(String event, Npc npc, Player player)
++	{
++		if ((npc == null) || (npc.getId() != LORD_ISHKA))
++		{
++			return null;
++		}
++		
++		switch (event)
++		{
++			case "AUTO_SKILL_LOOP":
++			{
++				if (!npc.isDead() && _bossInCombat)
++				{
++					// Safety timeout: If in CAST intention chasing for > 4s without casting, reset intention to avoid getting stuck
++					if (npc.getAI().getIntention() == Intention.CAST)
++					{
++						if ((_castIntentionStartTime > 0) && ((System.currentTimeMillis() - _castIntentionStartTime) > 4000))
++						{
++							npc.getAI().setIntentionActive();
++							_castIntentionStartTime = 0;
++						}
++					}
++					else
++					{
++						_castIntentionStartTime = 0;
++					}
++					
++					// If casting or actively moving to cast, do not interrupt
++					if (!npc.isCastingNow() && (npc.getAI().getIntention() != Intention.CAST))
++					{
++						if (npc.isAttackingNow())
++						{
++							npc.abortAttack();
++						}
++						manageSkills(npc);
++					}
++					
++					startQuestTimer("AUTO_SKILL_LOOP", 100, npc, null);
++				}
++				break;
++			}
++			case "activate_barrier":
++			{
++				_barrierActivated = true;
++				LIMIT_BARRIER.getSkill().applyEffects(npc, npc);
++				npc.setInvul(true);
++				_vulnerablePhase = false;
++				startQuestTimer("remove_barrier", BARRIER_DURATION_MILLIS, npc, null);
++				_ishkaHits.put(npc, 0);
++				break;
++			}
++			case "remove_barrier":
++			{
++				_barrierActivated = false;
++				npc.stopSkillEffects(LIMIT_BARRIER.getSkill());
++				npc.setInvul(false);
++				_ishkaHits.put(npc, 0);
++				break;
++			}
++			case "check_arena":
++			{
++				if ((_spawnedMainBoss != null) && !_spawnedMainBoss.isDead())
++				{
++					checkBossInArena(_spawnedMainBoss);
++				}
++				break;
++			}
++			case "checkCombatStatus":
++			{
++				checkCombatStatus(npc);
++				break;
++			}
++		}
++		
++		return super.onEvent(event, npc, player);
++	}
++	
++	private void checkCombatStatus(Npc npc)
++	{
++		if ((System.currentTimeMillis() - _lastAttackTime) > 15000)
++		{
++			_bossInCombat = false;
++			_comboStep = 0;
++			cancelQuestTimer("AUTO_SKILL_LOOP", npc, null);
++		}
++		else
++		{
++			_bossInCombat = true;
++		}
++	}
++	
++	// Boss Arena Safety Check:
++	// If pulled out of the arena, teleports back and resets full HP/MP.
++	
++	private void checkBossInArena(Npc npc)
++	{
++		if ((npc == null) || npc.isDead())
++		{
++			return;
++		}
++		
++		if ((ARENA_ZONE != null) && !ARENA_ZONE.isInsideZone(npc))
++		{
++			npc.teleToLocation(SPAWN_LOCATION, false);
++			npc.setCurrentHp(npc.getMaxHp());
++			npc.setCurrentMp(npc.getMaxMp());
++			_ishkaHits.put(npc, 0);
++			LOGGER.warning("Lord Ishka: Boss was outside arena bounds. Teleported back to spawn and restored full HP/MP.");
++		}
++	}
++	
++	@Override
++	public void onKill(Npc npc, Player killer, boolean isSummon)
++	{
++		if (npc == _spawnedMainBoss)
++		{
++			cancelQuestTimer("AUTO_SKILL_LOOP", npc, null);
++			cancelQuestTimer("checkCombatStatus", npc, null);
++			cancelQuestTimers("check_arena");
++			
++			GlobalVariablesManager.getInstance().set("LORD_ISHKA_ALIVE", false);
++			_spawnedMainBoss = null;
++			_bossInCombat = false;
++			_barrierActivated = false;
++			_vulnerablePhase = false;
++			_comboStep = 0;
++			
++			final long currentTime = System.currentTimeMillis();
++			GlobalVariablesManager.getInstance().set("LORD_ISHKA_LAST_DEATH_TIME", currentTime);
++			LOGGER.info("Lord Ishka: Boss killed. Next respawn scheduled for Wednesday 22:00 via fixed rate schedule.");
++		}
++	}
++	
++	public static void main(String[] args)
++	{
++		new LordIshka();
++	}
++}
