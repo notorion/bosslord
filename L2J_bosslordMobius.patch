@@ -1,10 +1,10 @@
 ### Eclipse Workspace Patch 1.0
 diff --git dist/game/data/scripts/ai/bosses/LordIshka/LordIshka.java dist/game/data/scripts/ai/bosses/LordIshka/LordIshka.java
 new file mode 100644
-index 0000000..ffbe7c6
+index 0000000..af4e890
 --- /dev/null
 +++ dist/game/data/scripts/ai/bosses/LordIshka/LordIshka.java
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,576 @@
 +/*
 + * Copyright (c) 2013 L2jMobius
 + * 
@@ -37,19 +37,16 @@ index 0000000..ffbe7c6
 +import org.l2jmobius.commons.util.Rnd;
 +import org.l2jmobius.gameserver.ai.Intention;
 +import org.l2jmobius.gameserver.data.SpawnTable;
-+import org.l2jmobius.gameserver.data.xml.NpcData;
 +import org.l2jmobius.gameserver.entity.Location;
 +import org.l2jmobius.gameserver.entity.World;
 +import org.l2jmobius.gameserver.entity.actor.Attackable;
 +import org.l2jmobius.gameserver.entity.actor.Creature;
 +import org.l2jmobius.gameserver.entity.actor.Npc;
 +import org.l2jmobius.gameserver.entity.actor.Player;
-+import org.l2jmobius.gameserver.entity.actor.templates.NpcTemplate;
 +import org.l2jmobius.gameserver.entity.groups.CommandChannel;
 +import org.l2jmobius.gameserver.entity.groups.Party;
 +import org.l2jmobius.gameserver.entity.spawns.Spawn;
 +import org.l2jmobius.gameserver.entity.zone.type.ArenaZone;
-+import org.l2jmobius.gameserver.managers.DatabaseSpawnManager;
 +import org.l2jmobius.gameserver.managers.GlobalVariablesManager;
 +import org.l2jmobius.gameserver.managers.ZoneManager;
 +import org.l2jmobius.gameserver.mechanics.script.Script;
@@ -109,7 +106,7 @@ index 0000000..ffbe7c6
 +		final long currentTime = System.currentTimeMillis();
 +		final Calendar calendar = Calendar.getInstance();
 +		
-+		// Spawn time to 22:00 Wednesday (Coatl RaidBoss model).
++		// Spawn time to 22:00 Wednesday
 +		calendar.set(Calendar.DAY_OF_WEEK, Calendar.WEDNESDAY);
 +		calendar.set(Calendar.HOUR_OF_DAY, 22);
 +		calendar.set(Calendar.MINUTE, 0);
@@ -142,37 +139,26 @@ index 0000000..ffbe7c6
 +			SpawnTable.getInstance().removeSpawn(oldSpawn);
 +		}
 +		
++		final Npc existing = World.getNpc(LORD_ISHKA);
++		if (existing != null)
++		{
++			existing.deleteMe();
++		}
++		
 +		try
 +		{
-+			// Anti-duplication safety: do not spawn if already alive in memory
-+			if ((_spawnedMainBoss != null) && !_spawnedMainBoss.isDead() && _spawnedMainBoss.isSpawned())
++			final Npc boss = addSpawn(LORD_ISHKA, SPAWN_LOCATION);
++			if (boss == null)
 +			{
-+				LOGGER.warning("Lord Ishka: Boss is already alive and spawned. Skipping duplicate spawn.");
++				LOGGER.severe("Lord Ishka: addSpawn returned null for " + SPAWN_LOCATION);
 +				return;
 +			}
-+			
-+			// Anti-duplication safety: check if an active instance already exists in World
-+			final Npc existing = World.getNpc(LORD_ISHKA);
-+			if ((existing != null) && !existing.isDead() && existing.isSpawned())
-+			{
-+				LOGGER.warning("Lord Ishka: Existing active NPC found in world. Reusing instance.");
-+				_spawnedMainBoss = existing;
-+				return;
-+			}
-+			
-+			final NpcTemplate template = NpcData.getInstance().getTemplate(LORD_ISHKA);
-+			final Spawn spawn = new Spawn(template);
-+			spawn.setXYZ(SPAWN_LOCATION);
-+			spawn.setHeading(SPAWN_LOCATION.getHeading());
-+			spawn.setRespawnDelay(0);
-+			
-+			final Npc boss = DatabaseSpawnManager.getInstance().addNewSpawn(spawn, false);
-+			_spawnedMainBoss = boss;
-+			GlobalVariablesManager.getInstance().set("LORD_ISHKA_ALIVE", true);
-+			LOGGER.info("Lord Ishka: Boss spawned successfully at " + SPAWN_LOCATION);
 +			
 +			boss.setRandomWalking(false);
 +			boss.setRandomAnimation(false);
++			_spawnedMainBoss = boss;
++			GlobalVariablesManager.getInstance().set("LORD_ISHKA_ALIVE", true);
++			LOGGER.info("Lord Ishka: Boss spawned successfully at " + SPAWN_LOCATION);
 +		}
 +		catch (Exception e)
 +		{
